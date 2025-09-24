@@ -1,0 +1,5 @@
+{
+  "name": "YouTube Infographic Generator",
+  "description": "An application that allows users to paste a YouTube video URL and instantly generate a clean vertical infographic summarizing the video into 5–7 key insights. The infographic can be previewed, styled, and downloaded as a PNG or PDF.",
+  "requestFramePermissions": []
+}
