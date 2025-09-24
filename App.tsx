@@ -1,6 +1,7 @@
 import React, { useState, useCallback, useRef } from 'react';
 import { StylePreset, InfographicData } from './types';
 import { summarizeTextForInfographic, generateInfographicIcons } from './services/geminiService';
+import { processTextLocally, getFallbackIcons } from './services/localContentService';
 import { Infographic } from './components/Infographic';
 import { InfographicCanvas } from './components/InfographicCanvas';
 import Spinner from './components/Spinner';
@@ -26,18 +27,39 @@ const App: React.FC = () => {
   const [infographicData, setInfographicData] = useState<InfographicData | null>(null);
   const [generatedIcons, setGeneratedIcons] = useState<string[] | null>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
+  
+  // State for local generation fallback
+  const [useLocalGeneration, setUseLocalGeneration] = useState<boolean>(false);
 
-  const handleGenerate = async () => {
-    if (!inputText || !apiKey) {
-      setError('Please provide the transcript/text and your Gemini API Key.');
-      return;
-    }
-    setIsLoading(true);
-    setError(null);
-    setGeneratedImage(null);
-    setInfographicData(null);
-    setGeneratedIcons(null);
+  const renderAndCaptureCanvas = useCallback(async () => {
+    setLoadingStep('Composing final infographic...');
+    // Wait for the state to update and the component to render before capturing
+    setTimeout(async () => {
+      if (canvasRef.current) {
+        try {
+            const canvas = await window.html2canvas(canvasRef.current, { 
+              useCORS: true, 
+              backgroundColor: null,
+              scale: 2 // Render at 2x resolution for higher quality
+            });
+            const imageUrl = canvas.toDataURL('image/png', 1.0);
+            setGeneratedImage(imageUrl);
+        } catch(e) {
+            throw new Error("Failed to capture infographic canvas. The content might be too complex.");
+        } finally {
+            // Clean up off-screen canvas data
+            setInfographicData(null);
+            setGeneratedIcons(null);
+            setIsLoading(false);
+            setLoadingStep('');
+        }
+      } else {
+          throw new Error("Failed to get a reference to the infographic canvas.")
+      }
+    }, 100);
+  }, []);
 
+  const generateWithAI = async () => {
     try {
       setLoadingStep('Analyzing text...');
       const data = await summarizeTextForInfographic(inputText, apiKey);
@@ -45,36 +67,55 @@ const App: React.FC = () => {
       setLoadingStep('Generating visual assets...');
       const icons = await generateInfographicIcons(data.insights, stylePreset, apiKey);
 
-      // Set data to render the canvas component off-screen
       setInfographicData(data);
       setGeneratedIcons(icons);
-
-      setLoadingStep('Composing final infographic...');
-      // Wait for the state to update and the component to render before capturing
-      setTimeout(async () => {
-        if (canvasRef.current) {
-          const canvas = await window.html2canvas(canvasRef.current, { 
-            useCORS: true, 
-            backgroundColor: null,
-            scale: 2 // Render at 2x resolution for higher quality
-          });
-          const imageUrl = canvas.toDataURL('image/png', 1.0);
-          setGeneratedImage(imageUrl);
-          
-          // Clean up off-screen canvas data
-          setInfographicData(null);
-          setGeneratedIcons(null);
-          setIsLoading(false);
-          setLoadingStep('');
-        } else {
-            throw new Error("Failed to get a reference to the infographic canvas.")
-        }
-      }, 100);
-
+      await renderAndCaptureCanvas();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An unknown error occurred.');
+      const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred.';
+      setError(`${errorMessage} You can try the "Generate offline" option as a backup.`);
       setIsLoading(false);
       setLoadingStep('');
+    }
+  };
+
+  const generateLocally = async () => {
+    try {
+      setLoadingStep('Processing text locally...');
+      const data = processTextLocally(inputText);
+      
+      setLoadingStep('Using fallback icons...');
+      const icons = getFallbackIcons(data.insights.length);
+
+      setInfographicData(data);
+      setGeneratedIcons(icons);
+      await renderAndCaptureCanvas();
+    } catch (err) {
+       setError(err instanceof Error ? err.message : 'An unknown error occurred during local generation.');
+       setIsLoading(false);
+       setLoadingStep('');
+    }
+  };
+
+  const handleGenerate = async () => {
+    if (!inputText) {
+      setError('Please provide the transcript/text to generate an infographic.');
+      return;
+    }
+    if (!useLocalGeneration && !apiKey) {
+      setError('Please provide your Gemini API Key or check "Generate offline".');
+      return;
+    }
+    
+    setIsLoading(true);
+    setError(null);
+    setGeneratedImage(null);
+    setInfographicData(null);
+    setGeneratedIcons(null);
+
+    if (useLocalGeneration) {
+      await generateLocally();
+    } else {
+      await generateWithAI();
     }
   };
 
@@ -135,21 +176,38 @@ const App: React.FC = () => {
               />
             </div>
             
-            <div>
-              <label htmlFor="apiKey" className="block text-sm font-medium text-gray-700">
-                2. Enter Your Google Gemini API Key
-              </label>
+            <div className="space-y-1">
+              <div className="flex items-center justify-between">
+                <label htmlFor="apiKey" className={`block text-sm font-medium ${useLocalGeneration ? 'text-gray-400' : 'text-gray-700'}`}>
+                  2. Enter Your Google Gemini API Key
+                </label>
+                 <div className="flex items-center">
+                    <input
+                      id="localGeneration"
+                      type="checkbox"
+                      checked={useLocalGeneration}
+                      onChange={(e) => setUseLocalGeneration(e.target.checked)}
+                      className="h-4 w-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                    />
+                    <label htmlFor="localGeneration" className="ml-2 block text-sm text-gray-900">
+                      Generate offline (no AI)
+                    </label>
+                  </div>
+              </div>
               <input
                 id="apiKey"
                 type="password"
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
-                placeholder="Enter your API Key here"
-                className="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-blue-500 focus:border-blue-500"
+                placeholder={useLocalGeneration ? "Not needed for offline generation" : "Enter your API Key here"}
+                className="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-100 disabled:cursor-not-allowed"
+                disabled={useLocalGeneration}
               />
-              <p className="mt-2 text-xs text-gray-500">
-                Get your key from <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">Google AI Studio</a>. Your key is used only in your browser.
-              </p>
+              {!useLocalGeneration && (
+                <p className="mt-2 text-xs text-gray-500">
+                  Get your key from <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">Google AI Studio</a>. Your key is used only in your browser.
+                </p>
+              )}
             </div>
 
             <div>

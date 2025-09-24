@@ -92,34 +92,46 @@ export const generateInfographicIcons = async (
   if (!apiKey) throw new Error('Gemini API key is required.');
   const ai = new GoogleGenAI({ apiKey });
   const template = templates[style];
+  const generatedIcons: string[] = [];
 
   try {
-    const iconPromises = insights.map(insight => {
+    // Process icon generation sequentially to avoid hitting API rate limits.
+    for (const insight of insights) {
       const prompt = template.prompt.replace('{keyword}', insight.icon_keyword);
-      return ai.models.generateImages({
-          model: 'imagen-4.0-generate-001',
-          prompt: prompt,
-          config: {
-            numberOfImages: 1,
-            outputMimeType: 'image/png',
-            aspectRatio: '1:1',
-          },
+      const response = await ai.models.generateImages({
+        model: 'imagen-4.0-generate-001',
+        prompt: prompt,
+        config: {
+          numberOfImages: 1,
+          outputMimeType: 'image/png',
+          aspectRatio: '1:1',
+        },
       });
-    });
-  
-    const responses = await Promise.all(iconPromises);
-  
-    return responses.map(response => {
+
       if (response.generatedImages && response.generatedImages.length > 0) {
-          const base64ImageBytes: string = response.generatedImages[0].image.imageBytes;
-          return `data:image/png;base64,${base64ImageBytes}`;
+        const base64ImageBytes: string = response.generatedImages[0].image.imageBytes;
+        generatedIcons.push(`data:image/png;base64,${base64ImageBytes}`);
+      } else {
+        throw new Error(`AI did not return an image for keyword: ${insight.icon_keyword}`);
       }
-      // This will be caught by the catch block below
-      throw new Error("AI did not return an image for one of the icons.");
-    });
+    }
+    
+    return generatedIcons;
 
   } catch (error) {
     console.error("Error generating infographic icons:", error);
-    throw new Error(`Failed to generate infographic icons: ${error instanceof Error ? error.message : String(error)}`);
+    // Attempt to parse the error for a cleaner message if it's a JSON string.
+    let errorMessage = `Failed to generate infographic icons: ${error instanceof Error ? error.message : String(error)}`;
+    if (error instanceof Error) {
+        try {
+            const parsedError = JSON.parse(error.message);
+            if (parsedError?.error?.message) {
+                errorMessage = `API Error: ${parsedError.error.message}`;
+            }
+        } catch (e) {
+            // Not a JSON string, use the original message.
+        }
+    }
+    throw new Error(errorMessage);
   }
 };
